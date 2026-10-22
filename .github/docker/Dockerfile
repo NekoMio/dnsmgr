@@ -1,3 +1,5 @@
+# 注意：构建上下文必须是仓库根目录
+#   docker build -f .github/docker/Dockerfile .
 ARG ALPINE_VERSION=3.24
 FROM alpine:${ALPINE_VERSION}
 # Setup document root
@@ -5,7 +7,6 @@ WORKDIR /app/www
 
 # Install packages and remove default server definition
 ARG SWOOLE_VERSION=6.2.3
-ARG CACHE_BUST=local
 RUN set -eux; \
     apk add --no-cache \
       bash \
@@ -88,36 +89,39 @@ RUN set -eux; \
     rm -rf /var/cache/apk/* /tmp/*
 
 # Configure nginx - http
-COPY config/nginx.conf /etc/nginx/nginx.conf
+COPY .github/docker/config/nginx.conf /etc/nginx/nginx.conf
 
 # Configure PHP-FPM
 ENV PHP_INI_DIR /etc/php83
-COPY config/fpm-pool.conf ${PHP_INI_DIR}/php-fpm.d/www.conf
-COPY config/php.ini ${PHP_INI_DIR}/conf.d/custom.ini
+COPY .github/docker/config/fpm-pool.conf ${PHP_INI_DIR}/php-fpm.d/www.conf
+COPY .github/docker/config/php.ini ${PHP_INI_DIR}/conf.d/custom.ini
 
 # Configure supervisord
-COPY config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY .github/docker/config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# CACHE_BUST 须写进每条相关 RUN，否则 GHA/BuildKit 可能单独命中 composer 相关层缓存，vendor 仍来自旧构建
+# Add application（直接使用当前仓库源码，构建上下文为仓库根目录）
+COPY app /usr/src/www/app
+COPY config /usr/src/www/config
+COPY public /usr/src/www/public
+COPY route /usr/src/www/route
+COPY think composer.json composer.lock .example.env /usr/src/www/
+RUN mkdir -p /usr/src/www/runtime
 
-# Add application
-RUN mkdir -p /usr/src && echo "$CACHE_BUST" >/dev/null && wget --no-cache https://github.com/netcccyun/dnsmgr/archive/refs/heads/main.zip -O /usr/src/www.zip && unzip /usr/src/www.zip -d /usr/src/ && mv /usr/src/dnsmgr-main /usr/src/www && rm -f /usr/src/www.zip
+# Install composer
+RUN curl -fsSL --retry 3 https://getcomposer.org/download/latest-stable/composer.phar -o /usr/local/bin/composer && chmod +x /usr/local/bin/composer
 
-# Install composer（与下面 install 一并随 CACHE_BUST 失效）
-RUN echo "$CACHE_BUST" >/dev/null && wget https://getcomposer.org/download/latest-stable/composer.phar -O /usr/local/bin/composer && chmod +x /usr/local/bin/composer
-
-RUN echo "$CACHE_BUST" >/dev/null && composer install -d /usr/src/www --no-interaction --no-dev --optimize-autoloader --no-cache
+RUN composer install -d /usr/src/www --no-interaction --no-dev --optimize-autoloader --no-cache
 
 RUN adduser -D -s /sbin/nologin -g www www && chown -R www:www /usr/src/www /var/lib/nginx /var/log/nginx
 
 # crontab
 RUN echo "* * * * * cd /app/www && /usr/bin/php83 think certtask" | crontab -u www -
 
-COPY config/run_tasks.sh /app/run_tasks.sh
+COPY .github/docker/config/run_tasks.sh /app/run_tasks.sh
 RUN chmod +x /app/run_tasks.sh
 
 # copy entrypoint script
-COPY entrypoint.sh /entrypoint.sh
+COPY .github/docker/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["sh", "/entrypoint.sh"]
 
 # Expose the port nginx is reachable on

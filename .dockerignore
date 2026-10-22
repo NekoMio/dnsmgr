@@ -1,0 +1,9 @@
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+.env
+vendor
+runtime
+*.log
