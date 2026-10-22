@@ -12,7 +12,8 @@ use Exception;
  * 文档：https://anyns.io/docs/api
  *
  * 说明（已对真实接口实测）：
- * - 列表接口不支持分页/筛选，统一在本地完成，故 DnsHelper 中 page=true；
+ * - 记录列表始终返回全量（DnsHelper 中 page=true，由前端客户端分页）；
+ *   域名列表支持本地分页，供「添加域名」弹窗按页拉取；
  * - 记录支持 remark 字段（文档未写，实测可用），log/weight 不支持；
  * - 更新记录时未传的 ttl/line/enabled/remark 会保留原值；
  * - MX 优先级没有独立字段，必须拼进 value（"10 mail.example.com"），否则报 service_error；
@@ -27,6 +28,10 @@ class anyns implements DnsInterface
     private $domain;
     private $domainid;
     private $proxy;
+    private $recordsCache;
+    private $recordsCacheTime = 0;
+    private $zonesCache;
+    private $zonesCacheTime = 0;
 
     function __construct($config)
     {
@@ -51,13 +56,20 @@ class anyns implements DnsInterface
     //获取域名列表（接口一次性返回全部，本地筛选+分页）
     public function getDomainList($KeyWord = null, $PageNumber = 1, $PageSize = 20)
     {
-        $data = $this->send_request('GET', '/zones');
-        if ($data === false) return false;
+        // 「添加域名」弹窗按页循环拉取，短缓存避免每页都整表请求一次
+        if ($this->zonesCache !== null && microtime(true) - $this->zonesCacheTime < 30) {
+            $rows = $this->zonesCache;
+        } else {
+            $data = $this->send_request('GET', '/zones');
+            if ($data === false) return false;
 
-        $rows = $this->pickList($data, ['zones', 'list', 'items', 'rows']);
-        if ($rows === false) {
-            $this->setError('获取域名列表失败：返回数据格式异常');
-            return false;
+            $rows = $this->pickList($data, ['zones', 'list', 'items', 'rows']);
+            if ($rows === false) {
+                $this->setError('获取域名列表失败：返回数据格式异常');
+                return false;
+            }
+            $this->zonesCache = $rows;
+            $this->zonesCacheTime = microtime(true);
         }
 
         $list = [];
@@ -126,9 +138,8 @@ class anyns implements DnsInterface
             }
         }
 
-        $total = count($list);
-        $offset = max(0, ($PageNumber - 1) * $PageSize);
-        return ['total' => $total, 'list' => array_slice($list, $offset, $PageSize)];
+        // page=true 表示前端客户端分页，这里必须返回全量记录，不能按 PageSize 截断
+        return ['total' => count($list), 'list' => $list];
     }
 
     //获取子域名解析记录列表
@@ -141,7 +152,7 @@ class anyns implements DnsInterface
     //获取解析记录详细信息（接口无单条查询，从列表中匹配）
     public function getDomainRecordInfo($RecordId)
     {
-        $rows = $this->getRecordsRaw();
+        $rows = $this->getRecordsRaw(true);
         if ($rows === false) return false;
 
         $lineMap = $this->getRecordLine();
@@ -168,6 +179,7 @@ class anyns implements DnsInterface
             }
             return false;
         }
+        $this->recordsCache = null;
         $record = $this->pickValue($this->pickObject($data, ['data']), ['record']);
         if (is_array($record) && isset($record['id'])) return strval($record['id']);
         return true;
@@ -179,6 +191,7 @@ class anyns implements DnsInterface
         $param = $this->recordParam($Name, $Type, $Value, $Line, $TTL, $MX, $Remark);
         $param['id'] = intval($RecordId);
         $data = $this->send_request('POST', '/zones/' . rawurlencode($this->domainid) . '/records', $param);
+        if ($data !== false) $this->recordsCache = null;
         return $data !== false;
     }
 
@@ -187,7 +200,8 @@ class anyns implements DnsInterface
     {
         $info = $this->getDomainRecordInfo($RecordId);
         if (!$info) return false;
-        $param = $this->recordParam($info['Name'], $info['Type'], $info['Value'], $info['Line'], $info['TTL'], $info['MX'], $Remark);
+        // 批量修改备注时控制器把空值传成 null，这里要显式传空字符串才能清空
+        $param = $this->recordParam($info['Name'], $info['Type'], $info['Value'], $info['Line'], $info['TTL'], $info['MX'], $Remark === null ? '' : $Remark);
         $param['id'] = intval($RecordId);
         $data = $this->send_request('POST', '/zones/' . rawurlencode($this->domainid) . '/records', $param);
         return $data !== false;
@@ -197,6 +211,7 @@ class anyns implements DnsInterface
     public function deleteDomainRecord($RecordId)
     {
         $data = $this->send_request('DELETE', '/zones/' . rawurlencode($this->domainid) . '/records/' . rawurlencode($RecordId));
+        if ($data !== false) $this->recordsCache = null;
         return $data !== false;
     }
 
@@ -269,6 +284,7 @@ class anyns implements DnsInterface
             $this->setError('添加域名失败：返回数据格式异常');
             return false;
         }
+        $this->zonesCache = null;
         $name = $this->pickValue($zone, ['zone_name', 'name'], $Domain);
         return ['id' => strval($zone['id']), 'name' => rtrim($name, '.')];
     }
@@ -322,6 +338,13 @@ class anyns implements DnsInterface
 
         $line = isset($row['line']) && $row['line'] !== '' ? strval($row['line']) : 'default';
         $status = $this->isEnabled($row) ? '1' : '0';
+        $updateTime = $this->pickValue($row, ['updated_at', 'update_time', 'modified_at']);
+        if (!empty($updateTime)) {
+            $timestamp = strtotime($updateTime);
+            $updateTime = $timestamp ? date('Y-m-d H:i:s', $timestamp) : null;
+        } else {
+            $updateTime = null;
+        }
 
         return [
             'RecordId' => strval($row['id']),
@@ -336,7 +359,7 @@ class anyns implements DnsInterface
             'Status' => $status,
             'Weight' => null,
             'Remark' => isset($row['remark']) && $row['remark'] !== '' ? strval($row['remark']) : null,
-            'UpdateTime' => $this->pickValue($row, ['updated_at', 'update_time', 'modified_at']),
+            'UpdateTime' => $updateTime,
         ];
     }
 
@@ -348,8 +371,15 @@ class anyns implements DnsInterface
         return in_array(strtolower(strval($value)), ['1', 'true', 'yes', 'on', 'enabled', 'active'], true);
     }
 
-    private function getRecordsRaw()
+    /**
+     * @param bool $useCache 批量操作时复用短缓存，避免每条记录都整域 GET 一次
+     */
+    private function getRecordsRaw($useCache = false)
     {
+        if ($useCache && $this->recordsCache !== null && microtime(true) - $this->recordsCacheTime < 5) {
+            return $this->recordsCache;
+        }
+
         $data = $this->send_request('GET', '/zones/' . rawurlencode($this->domainid) . '/records');
         if ($data === false) return false;
 
@@ -357,6 +387,10 @@ class anyns implements DnsInterface
         if ($rows === false) {
             $this->setError('获取解析记录失败：返回数据格式异常');
             return false;
+        }
+        if ($useCache) {
+            $this->recordsCache = $rows;
+            $this->recordsCacheTime = microtime(true);
         }
         return $rows;
     }
