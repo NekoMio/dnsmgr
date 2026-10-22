@@ -837,6 +837,42 @@ class DnsHelper
             'add' => true,
             'sort' => false,
         ],
+        'anyns' => [
+            'name' => 'anyns.io',
+            'icon' => 'anyns.ico',
+            'note' => '需要 manage 类型令牌（nhtdns_ 前缀），域名需先将 NS 指向 anyns 分配的名称服务器',
+            'config' => [
+                'token' => [
+                    'name' => 'API Token',
+                    'type' => 'input',
+                    'placeholder' => 'nhtdns_xxxxxxxx',
+                    'required' => true,
+                ],
+                'base_url' => [
+                    'name' => 'API地址',
+                    'type' => 'input',
+                    'placeholder' => '默认：https://anyns.io',
+                    'required' => false,
+                ],
+                'proxy' => [
+                    'name' => '使用代理服务器',
+                    'type' => 'radio',
+                    'options' => [
+                        '0' => '否',
+                        '1' => '是',
+                    ],
+                    'value' => '0'
+                ],
+            ],
+            'remark' => 1,
+            'status' => true,
+            'redirect' => false,
+            'log' => false,
+            'weight' => false,
+            'page' => true,
+            'add' => true,
+            'sort' => false,
+        ],
         'dynv6' => [
             'name' => 'dynv6',
             'icon' => 'dynv6.ico',
@@ -890,6 +926,8 @@ class DnsHelper
         'tencenteo' => ['DEF' => 'Default'],
         'dnsmgr' => ['DEF' => 'default'],
         'goedge' => ['DEF' => 'default'],
+        // anyns 无「境外」全局线路，AB 不映射（智能优化时跳过该线路）
+        'anyns' => ['DEF' => 'default', 'CT' => 'ct', 'CU' => 'cu', 'CM' => 'cm'],
     ];
 
     public static function getList()
