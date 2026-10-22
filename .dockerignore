@@ -7,3 +7,5 @@
 vendor
 runtime
 *.log
+.codex-tmp
+.ace-tool
